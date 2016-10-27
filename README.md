@@ -47,26 +47,13 @@ mosquitto_sub -d -t '#'
 mosquitto_sub -p 8883 --cafile ./tls/ca.pem -d -t '#'
 ```
 
-## Ports
+## Added Ports
 
 - `1883` MQTT
-- `4369` Erlang Port Mapper Daemon
-- `5671` AMQP (SSL)
-- `5672` AMQP
 - `8883` MQTT (SSL)
-- `15671` Management (SSL)
-- `15672` Management
-- `25672` Clustering
 
-## Environment
+## Added Environment Variables
 
-- `RABBITMQ_SSL_CERT_FILE`
-- `RABBITMQ_SSL_KEY_FILE`
-- `RABBITMQ_SSL_CA_FILE`
-- `RABBITMQ_ERLANG_COOKIE`
-- `RABBITMQ_DEFAULT_VHOST`
-- `RABBITMQ_DEFAULT_USER`
-- `RABBITMQ_DEFAULT_PASS`
 - `RABBITMQ_MQTT_VHOST`
 - `RABBITMQ_MQTT_EXCHANGE`
 - `RABBITMQ_MQTT_DEFAULT_USER`
