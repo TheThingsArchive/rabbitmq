@@ -1,0 +1,19 @@
+{
+    "CN": "The Things Network Example AMQP/MQTT Server",
+    "key": {
+        "algo": "rsa",
+        "size": 2048
+    },
+    "names": [
+        {
+            "C": "NL",
+            "L": "Amsterdam",
+            "O": "The Things Network",
+            "ST": "Noord-Holland",
+            "OU": "Example AMQP/MQTT"
+        }
+    ],
+    "hosts": [
+        "localhost"
+    ]
+}

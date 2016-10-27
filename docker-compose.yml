@@ -1,0 +1,30 @@
+version: '2'
+services:
+  rabbitmq:
+    build: .
+    # image: thethingsnetwork/rabbitmq
+    hostname: server
+    ports:
+      - "1883:1883"
+      - "127.0.0.1:4369:4369"
+      - "5671:5671"
+      - "5672:5672"
+      - "8883:8883"
+      - "127.0.0.1:15671:15671"
+      - "127.0.0.1:15672:15672"
+      - "127.0.0.1:25672:25672"
+    volumes:
+      - ./tls:/etc/rabbitmq/tls
+    environment:
+      # RABBITMQ_SSL_CERT_FILE: /etc/rabbitmq/tls/server.pem
+      # RABBITMQ_SSL_KEY_FILE: /etc/rabbitmq/tls/server-key.pem
+      # RABBITMQ_SSL_CA_FILE: /etc/rabbitmq/tls/ca.pem
+      # The env vars below are defaults. You can just leave them out if you want
+      RABBITMQ_ERLANG_COOKIE:
+      RABBITMQ_DEFAULT_VHOST: /
+      RABBITMQ_DEFAULT_USER: admin
+      RABBITMQ_DEFAULT_PASS: admin
+      RABBITMQ_MQTT_VHOST: /
+      RABBITMQ_MQTT_EXCHANGE: amq.topic
+      RABBITMQ_MQTT_DEFAULT_USER: guest
+      RABBITMQ_MQTT_DEFAULT_PASS: guest
