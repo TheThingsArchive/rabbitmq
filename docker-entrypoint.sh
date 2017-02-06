@@ -6,7 +6,7 @@ if [[ "$1" == rabbitmq* ]] && [ "$(id -u)" = '0' ]; then
 	if [ "$1" = 'rabbitmq-server' ]; then
 		chown -R rabbitmq /var/lib/rabbitmq
 	fi
-	exec gosu rabbitmq "$BASH_SOURCE" "$@"
+	exec su-exec rabbitmq "$BASH_SOURCE" "$@"
 fi
 
 # backwards compatibility for old environment variables
@@ -63,6 +63,11 @@ declare -A configDefaults=(
 
 	[ssl_fail_if_no_peer_cert]='false'
 	[ssl_verify]='verify_peer'
+
+	[mqtt_default_user]='guest'
+	[mqtt_default_pass]='guest'
+	[mqtt_vhost]='/'
+	[mqtt_exchange]='amq.topic'
 )
 
 haveConfig=
@@ -241,8 +246,11 @@ if [ "$1" = 'rabbitmq-server' ] && [ "$haveConfig" ]; then
 
 	fullConfig+=( "{ rabbit, $(rabbit_array "${rabbitConfig[@]}") }" )
 
-	# If management plugin is installed, then generate config consider this
+	# if management plugin is installed, generate config for it
+	# https://www.rabbitmq.com/management.html#configuration
 	if [ "$(rabbitmq-plugins list -m -e rabbitmq_management)" ]; then
+		rabbitManagementConfig=()
+
 		if [ "$haveManagementSslConfig" ]; then
 			IFS=$'\n'
 			rabbitManagementSslOptions=( $(rabbit_env_config 'management_ssl' "${sslConfigKeys[@]}") )
@@ -259,14 +267,30 @@ if [ "$1" = 'rabbitmq-server' ] && [ "$haveConfig" ]; then
 				'{ ssl, false }'
 			)
 		fi
+		rabbitManagementConfig+=(
+			"{ listener, $(rabbit_array "${rabbitManagementListenerConfig[@]}") }"
+		)
+
+		# if definitions file exists, then load it
+		# https://www.rabbitmq.com/management.html#load-definitions
+		managementDefinitionsFile='/etc/rabbitmq/definitions.json'
+		if [ -f "${managementDefinitionsFile}" ]; then
+			# see also https://github.com/docker-library/rabbitmq/pull/112#issuecomment-271485550
+			rabbitManagementConfig+=(
+				"{ load_definitions, \"$managementDefinitionsFile\" }"
+			)
+		fi
 
 		fullConfig+=(
-			"{ rabbitmq_management, $(rabbit_array "{ listener, $(rabbit_array "${rabbitManagementListenerConfig[@]}") }") }"
+			"{ rabbitmq_management, $(rabbit_array "${rabbitManagementConfig[@]}") }"
 		)
 	fi
 
-	# If mqtt plugin is installed, then generate config consider this
+	# if mqtt plugin is installed, generate config for it
+	# https://www.rabbitmq.com/mqtt.html#config
 	if [ "$(rabbitmq-plugins list -m -e rabbitmq_mqtt)" ]; then
+		rabbitMQTTConfig=()
+
 		IFS=$'\n'
 		rabbitMQTTConfig+=( $(rabbit_env_config 'mqtt' "${mqttConfigKeys[@]}") )
 		unset IFS
@@ -274,6 +298,7 @@ if [ "$1" = 'rabbitmq-server' ] && [ "$haveConfig" ]; then
 		rabbitMQTTConfig+=(
 			"{ tcp_listeners, $(rabbit_array "1883") }"
 		)
+
 		if [ "$haveSslConfig" ]; then
 			rabbitMQTTConfig+=(
 				"{ ssl_listeners, $(rabbit_array "8883") }"
@@ -310,4 +335,3 @@ fi
 cat /etc/rabbitmq/rabbitmq.config
 
 exec "$@"
-0
