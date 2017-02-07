@@ -4,7 +4,7 @@ RabbitMQ is open source message broker software (sometimes called message-orient
 
 ## About this image
 
-- Based on [`rabbitmq:management`](https://hub.docker.com/_/rabbitmq/)
+- Based on [`rabbitmq:management-alpine`](https://hub.docker.com/_/rabbitmq/) (MIT License)
 - Includes `rabbitmq_mqtt` plugin
 
 ## Quick Start
