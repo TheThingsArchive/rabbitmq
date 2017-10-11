@@ -1,6 +1,28 @@
 #!/bin/bash
 set -eu
 
+# usage: file_env VAR [DEFAULT]
+#    ie: file_env 'XYZ_DB_PASSWORD' 'example'
+# (will allow for "$XYZ_DB_PASSWORD_FILE" to fill in the value of
+#  "$XYZ_DB_PASSWORD" from a file, especially for Docker's secrets feature)
+file_env() {
+	local var="$1"
+	local fileVar="${var}_FILE"
+	local def="${2:-}"
+	if [ "${!var:-}" ] && [ "${!fileVar:-}" ]; then
+		echo >&2 "error: both $var and $fileVar are set (but are exclusive)"
+		exit 1
+	fi
+	local val="$def"
+	if [ "${!var:-}" ]; then
+		val="${!var}"
+	elif [ "${!fileVar:-}" ]; then
+		val="$(< "${!fileVar}")"
+	fi
+	export "$var"="$val"
+	unset "$fileVar"
+}
+
 # allow the container to be started with `--user`
 if [[ "$1" == rabbitmq* ]] && [ "$(id -u)" = '0' ]; then
 	if [ "$1" = 'rabbitmq-server' ]; then
@@ -19,10 +41,17 @@ fi
 : "${RABBITMQ_MANAGEMENT_SSL_CERTFILE:=$RABBITMQ_SSL_CERTFILE}"
 : "${RABBITMQ_MANAGEMENT_SSL_KEYFILE:=$RABBITMQ_SSL_KEYFILE}"
 
+# Allowed env vars that will be read from mounted files (i.e. Docker Secrets):
+fileEnvKeys=(
+	default_user
+	default_pass
+)
+
 # https://www.rabbitmq.com/configure.html
 sslConfigKeys=(
 	cacertfile
 	certfile
+	depth
 	fail_if_no_peer_cert
 	keyfile
 	verify
@@ -35,6 +64,7 @@ rabbitConfigKeys=(
 	default_user
 	default_vhost
 	hipe_compile
+	vm_memory_high_watermark
 )
 mqttConfigKeys=(
 	vhost
@@ -73,10 +103,15 @@ declare -A configDefaults=(
 haveConfig=
 haveSslConfig=
 haveManagementSslConfig=
+for fileEnvKey in "${fileEnvKeys[@]}"; do file_env "RABBITMQ_${fileEnvKey^^}"; done
 for conf in "${allConfigKeys[@]}"; do
 	var="RABBITMQ_${conf^^}"
 	val="${!var:-}"
 	if [ "$val" ]; then
+		if [ "${configDefaults[$conf]:-}" ] && [ "${configDefaults[$conf]}" = "$val" ]; then
+			# if the value set is the same as the default, treat it as if it isn't set
+			continue
+		fi
 		haveConfig=1
 		case "$conf" in
 			ssl_*) haveSslConfig=1 ;;
@@ -148,8 +183,8 @@ if [ "${RABBITMQ_ERLANG_COOKIE:-}" ]; then
 		fi
 	else
 		echo "$RABBITMQ_ERLANG_COOKIE" > "$cookieFile"
-		chmod 600 "$cookieFile"
 	fi
+	chmod 600 "$cookieFile"
 fi
 
 # prints "$2$1$3$1...$N"
@@ -190,7 +225,7 @@ rabbit_env_config() {
 
 		local rawVal=
 		case "$conf" in
-			verify|fail_if_no_peer_cert)
+			verify|fail_if_no_peer_cert|depth)
 				[ "$val" ] || continue
 				rawVal="$val"
 				;;
@@ -217,13 +252,77 @@ rabbit_env_config() {
 	join $'\n' "${ret[@]}"
 }
 
-if [ "$1" = 'rabbitmq-server' ] && [ "$haveConfig" ]; then
+shouldWriteConfig="$haveConfig"
+if [ ! -f /etc/rabbitmq/rabbitmq.config ]; then
+	shouldWriteConfig=1
+fi
+
+if [ "$1" = 'rabbitmq-server' ] && [ "$shouldWriteConfig" ]; then
 	fullConfig=()
 
 	rabbitConfig=(
 		"{ loopback_users, $(rabbit_array) }"
 		"{ tcp_listeners, $(rabbit_array 5672) }"
 	)
+
+	# determine whether to set "vm_memory_high_watermark" (based on cgroups)
+	memTotalKb=
+	if [ -r /proc/meminfo ]; then
+		memTotalKb="$(awk -F ':? +' '$1 == "MemTotal" { print $2; exit }' /proc/meminfo)"
+	fi
+	memLimitB=
+	if [ -r /sys/fs/cgroup/memory/memory.limit_in_bytes ]; then
+		# "18446744073709551615" is a valid value for "memory.limit_in_bytes", which is too big for Bash math to handle
+		# "$(( 18446744073709551615 / 1024 ))" = 0; "$(( 18446744073709551615 * 40 / 100 ))" = 0
+		memLimitB="$(awk -v totKb="$memTotalKb" '{
+			limB = $0;
+			limKb = limB / 1024;
+			if (!totKb || limKb < totKb) {
+				printf "%.0f\n", limB;
+			}
+		}' /sys/fs/cgroup/memory/memory.limit_in_bytes)"
+	fi
+	if [ -n "$memLimitB" ]; then
+		# if we have a cgroup memory limit, let's inform RabbitMQ of what it is (so it can calculate vm_memory_high_watermark properly)
+		# https://github.com/rabbitmq/rabbitmq-server/pull/1234
+		rabbitConfig+=( "{ total_memory_available_override_value, $memLimitB }" )
+	fi
+	if [ "${RABBITMQ_VM_MEMORY_HIGH_WATERMARK:-}" ]; then
+		# https://github.com/docker-library/rabbitmq/pull/105#issuecomment-242165822
+		vmMemoryHighWatermark="$(
+			awk '
+				/^[0-9]*[.][0-9]+$|^[0-9]+([.][0-9]+)?%$/ {
+					perc = $0;
+					if (perc ~ /%$/) {
+						gsub(/%$/, "", perc);
+						perc = perc / 100;
+					}
+					if (perc > 1.0 || perc <= 0.0) {
+						printf "error: invalid percentage for vm_memory_high_watermark: %s (must be > 0%%, <= 100%%)\n", $0 > "/dev/stderr";
+						exit 1;
+					}
+					printf "%0.03f\n", perc;
+					next;
+				}
+				/^[0-9]+$/ {
+					printf "{ absolute, %s }\n", $0;
+					next;
+				}
+				/^[0-9]+([.][0-9]+)?[a-zA-Z]+$/ {
+					printf "{ absolute, \"%s\" }\n", $0;
+					next;
+				}
+				{
+					printf "error: unexpected input for vm_memory_high_watermark: %s\n", $0;
+					exit 1;
+				}
+			' <(echo "$RABBITMQ_VM_MEMORY_HIGH_WATERMARK")
+		)"
+		if [ "$vmMemoryHighWatermark" ]; then
+			# https://www.rabbitmq.com/memory.html#memsup-usage
+			rabbitConfig+=( "{ vm_memory_high_watermark, $vmMemoryHighWatermark }" )
+		fi
+	fi
 
 	if [ "$haveSslConfig" ]; then
 		IFS=$'\n'
